@@ -1,0 +1,28 @@
+{
+  "name": "whatsapp-email-drafter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "dev": "npm run build && wrangler dev"
+  },
+  "engines": { "node": ">=22.12.0" },
+  "overrides": {
+    "sharp": "^0.35.4"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260918.1",
+    "@playwright/test": "^1.58.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.0",
+    "vitest": "~4.1.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "whatsapp-email-drafter",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "account_id": "48327d5892e89d4a916a72b8dd3c112d",
+"d1_databases": [{
+  "binding": "DB",
+  "database_name": "whatsapp-email-drafts",
+  "database_id": "0826d892-cbf7-4a50-9651-36be875519d1",
+  "migrations_dir": "migrations"
+}]
+
+  // Required runtime settings belong in .dev.vars / Worker vars; API key is a secret.
+  // LLM_BASE_URL is the API root (e.g. https://api.openai.com/v1), not /chat/completions.
+}

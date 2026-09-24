@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Client email drafts</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.ts"></script>
+  </head>
+  <body>
+    <!-- Design contract: Operate. One client's whole export becomes two independent email drafts.
+    Light office-work surface, slate text, blue actions, system typography, ruled editor and history.
+    Upload first; review/edit department tabs; explicitly save or copy for manual sending.
+    Desktop: compact source form above editor and client-grouped history. Mobile: one column, 44px targets.
+    States: empty, analyzing, independent success/error/saving, retry, cancellation, unsaved and saved lineage.
+    Reject decorative dashboard metrics, card grids, sending controls and persistent browser content. -->
+    <main>
+      <header><h1>Client email drafts</h1><p>Turn one client’s WhatsApp export into Operations and Administration emails.</p></header>
+      <form id="source-form" aria-label="Generate email drafts">
+        <div><label for="client-name">Client name</label><input id="client-name" name="clientName" required autocomplete="off"></div>
+        <div><label for="transcript">WhatsApp export (.txt)</label><input id="transcript" name="transcript" type="file" accept=".txt,text/plain" required aria-describedby="upload-help"></div>
+        <button id="generate" type="submit" disabled>Generate drafts</button>
+      </form>
+      <p id="upload-help" class="hint">Every upload processes the entire history. Export and analysis stay in memory; re-upload after refresh.</p>
+      <div class="progress-row"><p id="progress" role="status">Loading configuration…</p><button id="cancel" type="button" hidden>Cancel generation</button></div>
+      <p id="source-error" class="error" role="alert"></p>
+      <button id="reload-config" type="button" hidden>Retry configuration</button>
+      <div class="workspace">
+        <section aria-label="Department drafts">
+          <div role="tablist" aria-label="Department">
+            <button id="tab-operations" type="button" role="tab" aria-selected="true" aria-controls="panel-operations">Operations <span id="badge-operations">Not generated</span></button>
+            <button id="tab-administration" type="button" role="tab" aria-selected="false" aria-controls="panel-administration" tabindex="-1">Administration <span id="badge-administration">Not generated</span></button>
+          </div>
+          <div id="editors"></div>
+        </section>
+        <aside aria-labelledby="history-title">
+          <div class="history-heading"><h2 id="history-title">Saved history</h2><button id="refresh-history" type="button">Refresh</button></div>
+          <p class="hint">Only drafts you explicitly save appear here.</p>
+          <p id="history-status" role="status"></p><p id="history-error" class="error" role="alert"></p>
+          <div id="history"></div>
+        </aside>
+      </div>
+    </main>
+  </body>
+</html>

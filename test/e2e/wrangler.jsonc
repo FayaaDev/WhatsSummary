@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pms-local-integration-only",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-18",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": { "directory": "../../dist", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "pms-e2e-only",
+    "database_id": "11111111-1111-1111-1111-111111111111",
+    "migrations_dir": "../../migrations"
+  }],
+  "vars": {
+    "LLM_BASE_URL": "https://synthetic.invalid/v1",
+    "LLM_API_KEY": "synthetic-unused-key",
+    "LLM_MODEL": "synthetic-injected-adapter",
+    "OPERATIONS_EMAIL": "operations@example.com",
+    "ADMINISTRATION_EMAIL": "administration@example.com",
+    "MAX_SUBJECT_CHARS": "600"
+  }
+}

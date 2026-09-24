@@ -4,3 +4,21 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+.opencode/ralph-loop.local.md
+
+# Application artifacts and local-only data
+node_modules/
+dist/
+.wrangler/
+playwright-report/
+test-results/
+blob-report/
+coverage/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+local-exports/
+exports/
+.DS_Store
