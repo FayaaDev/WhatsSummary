@@ -1,42 +1,48 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>Client email drafts</title>
+    <title>WhatsApp email drafts</title>
     <link rel="stylesheet" href="/styles.css">
     <script type="module" src="/app.ts"></script>
   </head>
   <body>
-    <!-- Design contract: Operate. One client's whole export becomes two independent email drafts.
-    Light office-work surface, slate text, blue actions, system typography, ruled editor and history.
-    Upload first; review/edit department tabs; explicitly save or copy for manual sending.
-    Desktop: compact source form above editor and client-grouped history. Mobile: one column, 44px targets.
-    States: empty, analyzing, independent success/error/saving, retry, cancellation, unsaved and saved lineage.
-    Reject decorative dashboard metrics, card grids, sending controls and persistent browser content. -->
+    <!-- Operate: paste or upload one export, edit one email, save or copy manually.
+    Preserve the office-work palette, editor/history layout and accessible 44px controls. -->
     <main>
-      <header><h1>Client email drafts</h1><p>Turn one client’s WhatsApp export into Operations and Administration emails.</p></header>
-      <form id="source-form" aria-label="Generate email drafts">
-        <div><label for="client-name">Client name</label><input id="client-name" name="clientName" required autocomplete="off"></div>
-        <div><label for="transcript">WhatsApp export (.txt)</label><input id="transcript" name="transcript" type="file" accept=".txt,text/plain" required aria-describedby="upload-help"></div>
-        <button id="generate" type="submit" disabled>Generate drafts</button>
+      <header><div><h1 data-i18n="WhatsApp email drafts">WhatsApp email drafts</h1><p data-i18n="Turn a WhatsApp export into one editable email.">Turn a WhatsApp export into one editable email.</p></div><button id="language-toggle" type="button" aria-pressed="false"><span lang="en" dir="ltr">Arabic</span> / <span lang="ar" dir="rtl">العربية</span></button></header>
+      <form id="source-form" aria-label="Generate email" data-i18n-label="Generate email">
+        <div class="paste-field"><label for="transcript-text" data-i18n="Paste WhatsApp export">Paste WhatsApp export</label><textarea id="transcript-text" dir="auto" aria-describedby="upload-help"></textarea></div>
+        <div><label id="file-label" for="transcript" data-i18n="Or upload WhatsApp export (.txt)">Or upload WhatsApp export (.txt)</label><input id="transcript" type="file" accept=".txt,text/plain" aria-describedby="upload-help" hidden><div class="file-picker"><button id="choose-file" type="button" aria-describedby="file-label file-name upload-help" data-i18n="Choose file">Choose file</button><span id="file-name" dir="auto">No file chosen</span></div></div>
+        <div class="source-actions"><button id="clear-source" type="button" data-i18n="Clear export">Clear export</button><button id="generate" type="submit" disabled data-i18n="Generate email">Generate email</button></div>
       </form>
-      <p id="upload-help" class="hint">Every upload processes the entire history. Export and analysis stay in memory; re-upload after refresh.</p>
-      <div class="progress-row"><p id="progress" role="status">Loading configuration…</p><button id="cancel" type="button" hidden>Cancel generation</button></div>
+      <p id="upload-help" class="hint" data-i18n="Use pasted text or a .txt file. Clear the export to switch. The full export is processed and is not saved.">Use pasted text or a .txt file. Clear the export to switch. The full export is processed and is not saved.</p>
+      <div class="progress-row"><p id="progress" role="status">Loading configuration…</p><button id="cancel" type="button" hidden data-i18n="Cancel generation">Cancel generation</button></div>
       <p id="source-error" class="error" role="alert"></p>
-      <button id="reload-config" type="button" hidden>Retry configuration</button>
+      <button id="reload-config" type="button" hidden data-i18n="Retry configuration">Retry configuration</button>
       <div class="workspace">
-        <section aria-label="Department drafts">
-          <div role="tablist" aria-label="Department">
-            <button id="tab-operations" type="button" role="tab" aria-selected="true" aria-controls="panel-operations">Operations <span id="badge-operations">Not generated</span></button>
-            <button id="tab-administration" type="button" role="tab" aria-selected="false" aria-controls="panel-administration" tabindex="-1">Administration <span id="badge-administration">Not generated</span></button>
-          </div>
-          <div id="editors"></div>
+        <section id="editor" aria-labelledby="draft-title">
+          <h2 id="draft-title" data-i18n="Email draft">Email draft</h2>
+          <p id="status" role="status">Not generated</p>
+          <p id="meta" class="editor-meta"></p>
+          <p id="editor-error" class="error" role="alert"></p>
+          <p id="empty" class="hint" data-i18n="Paste or upload an export to create a draft, or open a saved version.">Paste or upload an export to create a draft, or open a saved version.</p>
+          <form id="draft-form" aria-label="Email draft" data-i18n-label="Email draft">
+            <div class="editor-field"><label for="subject" data-i18n="Subject">Subject</label><input id="subject" dir="auto" required autocomplete="off"></div>
+            <div class="editor-field"><label for="body" data-i18n="Email body">Email body</label><textarea id="body" dir="auto" required></textarea></div>
+            <div class="actions">
+              <button id="save" class="primary" type="submit">Save draft</button>
+              <button id="copy" type="button" data-i18n="Copy email">Copy email</button>
+              <button id="regenerate" type="button" data-i18n="Regenerate">Regenerate</button>
+            </div>
+          </form>
+          <p class="hint" data-i18n="Regenerate uses the current export and creates a new unsaved draft. Saved versions stay in history.">Regenerate uses the current export and creates a new unsaved draft. Saved versions stay in history.</p>
         </section>
         <aside aria-labelledby="history-title">
-          <div class="history-heading"><h2 id="history-title">Saved history</h2><button id="refresh-history" type="button">Refresh</button></div>
-          <p class="hint">Only drafts you explicitly save appear here.</p>
+          <div class="history-heading"><h2 id="history-title" data-i18n="Saved history">Saved history</h2><button id="refresh-history" type="button" data-i18n="Refresh">Refresh</button></div>
+          <p class="hint" data-i18n="Only drafts you explicitly save appear here.">Only drafts you explicitly save appear here.</p>
           <p id="history-status" role="status"></p><p id="history-error" class="error" role="alert"></p>
           <div id="history"></div>
         </aside>

@@ -1,28 +1,20 @@
 import { expect, type Page, type Route } from "@playwright/test";
-import type { Department, Draft, DraftCandidate, GenerationEvent, PublicConfig, TemporaryAnalysis } from "../../src/contracts";
+import type { Draft, DraftCandidate, GenerationEvent, PublicConfig } from "../../src/contracts";
 import { AppError } from "../../src/errors";
 
-export const analysis: TemporaryAnalysis = {
-  source_messages: [{ id: "m1", index: 0, timestamp: "2026-09-16T10:00:00" }],
-  conversations: [{ id: "c1", source_message_ids: ["m1"], outcome_summary: "Client requested a site visit." }],
-  client_facts: [{ kind: "timing", value: "Site visit in October", source_message_ids: ["m1"] }],
-  pending_actions: [{ id: "a1", description: "Arrange the requested visit", source_message_ids: ["m1"], completion_uncertain: false }],
-};
-export const candidate = (department: Department, client = "Example Client", parent: string | null = null): DraftCandidate => ({
-  client_name: client, department, parent_draft_id: parent,
-  recipient_email: `${department}@example.com`, email_subject: `${department} overview`,
-  email_body: `Site visit in October — ${department}.\n\nArrange the requested visit.`,
-});
-export const result = (department: Department, client = "Example Client", parent: string | null = null): GenerationEvent =>
-  ({ type: "department_result", department, draft: candidate(department, client, parent) }) as GenerationEvent;
-export const failure = (department: Department): GenerationEvent => ({ type: "department_error", department, ...new AppError("MODEL_TIMEOUT").toJSON() });
-export const initial = (client = "Example Client"): GenerationEvent[] => [
-  { type: "stage", stage: "extraction", completed: 1, total: 1 },
-  { type: "analysis", analysis }, result("operations", client), result("administration", client), { type: "done" },
-];
-export const ndjson = (events: unknown[]) => events.map(event => JSON.stringify(event)).join("\n") + "\n";
-export const fulfillStream = (route: Route, events: unknown[]) => route.fulfill({ contentType: "application/x-ndjson", body: ndjson(events) });
-export const saved = (draft: DraftCandidate, id: string): Draft => ({ ...draft, id, revision: 1, created_at: "2026-09-18T10:00:00Z", updated_at: "2026-09-18T10:00:00Z" });
+export const transcript = "16/09/2026, 10:00 - Client: Please arrange a visit in October.";
+export const candidate: DraftCandidate = { email_subject: "October site visit", email_body: "Please arrange the requested visit in October." };
+export function initial(draft = candidate): GenerationEvent[] {
+  return [{ type: "stage", stage: "synthesis", completed: 0, total: 1 },
+    { type: "stage", stage: "synthesis", completed: 1, total: 1 }, { type: "result", draft }, { type: "done" }];
+}
+export function ndjson(events: unknown[]): string { return events.map(event => JSON.stringify(event)).join("\n") + "\n"; }
+export function fulfillStream(route: Route, events: unknown[]): Promise<void> {
+  return route.fulfill({ contentType: "application/x-ndjson", body: ndjson(events) });
+}
+export function saved(draft: DraftCandidate, id: string): Draft {
+  return { ...draft, id, revision: 1, created_at: "2026-09-18T10:00:00Z", updated_at: "2026-09-18T10:00:00Z" };
+}
 
 export async function mockApi(page: Page, validationLimits: Partial<PublicConfig["validationLimits"]> = {}) {
   const drafts: Draft[] = [];
@@ -33,21 +25,12 @@ export async function mockApi(page: Page, validationLimits: Partial<PublicConfig
     const request = route.request();
     const path = new URL(request.url()).pathname;
     const method = request.method();
-    if (path === "/api/config") return route.fulfill({ json: { departments: [
-      { id: "operations", name: "Operations", email: "operations@example.com" },
-      { id: "administration", name: "Administration", email: "administration@example.com" },
-    ], maxUploadBytes: 2 * 1024 * 1024, validationLimits: {
-      maxRequestBytes: 4194304, maxAnalysisBytes: 2097152, maxClientNameChars: 200, maxSubjectChars: 500, maxBodyChars: 500000,
-      ...validationLimits,
-    } } });
+    if (path === "/api/config") return route.fulfill({ json: { maxUploadBytes: 2 * 1024 * 1024, validationLimits: {
+      maxRequestBytes: 4194304, maxSubjectChars: 500, maxBodyChars: 500000, ...validationLimits,
+    } } satisfies PublicConfig });
     if (path === "/api/generate") {
       generations.push({ path, body: request.postData() ?? "" });
       return fulfillStream(route, initial());
-    }
-    if (path === "/api/generate/department") {
-      generations.push({ path, body: request.postData() ?? "" });
-      const body = request.postDataJSON();
-      return fulfillStream(route, [result(body.department, body.clientName, body.parentDraftId), { type: "done" }]);
     }
     if (path === "/api/drafts" && method === "GET") return route.fulfill({ json: drafts });
     if (method === "POST" && path === "/api/drafts") {
@@ -57,6 +40,7 @@ export async function mockApi(page: Page, validationLimits: Partial<PublicConfig
       drafts.unshift(draft);
       return route.fulfill({ status: 201, json: draft });
     }
+    if (!path.startsWith("/api/drafts/")) throw new Error(`Unexpected test request: ${method} ${path}`);
     const draft = drafts.find(item => item.id === path.split("/").pop());
     if (!draft) return route.fulfill({ status: 404, json: { error: new AppError("NOT_FOUND").toJSON() } });
     if (method === "GET") return route.fulfill({ json: draft });
@@ -69,7 +53,6 @@ export async function mockApi(page: Page, validationLimits: Partial<PublicConfig
     if (method === "DELETE") { drafts.splice(drafts.indexOf(draft), 1); return route.fulfill({ status: 204 }); }
     throw new Error(`Unexpected test request: ${method} ${path}`);
   });
-  // Browser permission is deliberately not required by these deterministic clipboard tests.
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
       writeText: async (text: string) => { (window as unknown as { copied: string }).copied = text; },
@@ -78,16 +61,27 @@ export async function mockApi(page: Page, validationLimits: Partial<PublicConfig
   return { drafts, writes, generations };
 }
 
-export async function upload(page: Page, text = "16/09/2026, 10:00 - Client: Please arrange a visit in October.", name = "export.txt") {
-  await page.getByLabel("WhatsApp export (.txt)").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(text) });
+export async function upload(page: Page, text = transcript, name = "export.txt"): Promise<void> {
+  await page.getByLabel("Or upload WhatsApp export (.txt)").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(text) });
 }
-export async function start(page: Page) {
+export async function start(page: Page, source: "paste" | "file" = "paste"): Promise<void> {
   await page.goto("/");
-  await expect(page.getByText("Ready to process the full export.")).toBeVisible();
-  await page.getByLabel("Client name", { exact: true }).fill("Example Client");
-  await upload(page);
-  await page.getByRole("button", { name: "Generate drafts", exact: true }).click();
+  await expect(page.locator("#progress")).toContainText("Ready to process");
+  if (source === "file") await upload(page);
+  else await page.getByLabel("Paste WhatsApp export").fill(transcript);
+  await page.getByRole("button", { name: "Generate email", exact: true }).click();
 }
-export const panel = (page: Page, department: Department) => page.locator(`#panel-${department}`);
-export async function tab(page: Page, department: Department) { await page.locator(`#tab-${department}`).click(); }
-export async function generated(page: Page) { await expect(page.locator("#progress")).toContainText("Department attempts finished"); }
+export async function generated(page: Page): Promise<void> {
+  await expect(page.locator("#progress")).toContainText("Email ready");
+  await expect(page.locator("#subject")).toBeEditable();
+}
+export async function forbidPersistence(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const calls: string[] = [];
+    (window as unknown as { persistenceCalls: string[] }).persistenceCalls = calls;
+    Storage.prototype.setItem = () => { calls.push("storage"); throw new Error("Persistence forbidden"); };
+    indexedDB.open = () => { calls.push("indexedDB"); throw new Error("Persistence forbidden"); };
+    caches.open = async () => { calls.push("cache"); throw new Error("Persistence forbidden"); };
+    navigator.serviceWorker.register = async () => { calls.push("serviceWorker"); throw new Error("Persistence forbidden"); };
+  });
+}

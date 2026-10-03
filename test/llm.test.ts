@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_LIMITS, type AppConfig } from "../src/config";
 import { AppError } from "../src/errors";
+import { generateEmail } from "../src/generation";
 import { createLlmAdapter, type FetchLike } from "../src/llm";
-import { validateDepartmentModelResult } from "../src/validation";
+import { parseTranscript } from "../src/transcript";
+import { validateModelResult } from "../src/validation";
 
 function config(overrides: Partial<AppConfig["limits"]> = {}): AppConfig {
-  return { llm: { baseUrl: "https://provider.example/custom/v1/", apiKey: "private-key", model: "test-model" }, departments: [], limits: { ...DEFAULT_LIMITS, ...overrides } };
+  return { llm: { baseUrl: "https://provider.example/custom/v1/", apiKey: "private-key", model: "test-model" }, limits: { ...DEFAULT_LIMITS, ...overrides } };
 }
 const result = { email_subject: "Update", email_body: "Scope agreed." };
-const request = { messages: [{ role: "user" as const, content: "Produce a subject and body as JSON." }], validate: validateDepartmentModelResult };
+const request = { messages: [{ role: "user" as const, content: "Produce a subject and body as JSON." }], validate: validateModelResult };
 function response(content: unknown = result, finish_reason = "stop"): Response {
   return Response.json({ choices: [{ finish_reason, message: { content: typeof content === "string" ? content : JSON.stringify(content) } }] });
 }
@@ -66,6 +68,20 @@ describe("LLM transport", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages.at(-1).content).toContain("untrusted previous output");
   });
+  it("retains trusted Arabic instructions and the full transcript during repair", async () => {
+    const arabic = { email_subject: "تحديث النطاق", email_body: "تم الاتفاق على النطاق." };
+    const transcript = parseTranscript("18/09/2026, 12:00 - Nick: Scope agreed.");
+    const fetcher = vi.fn<FetchLike>().mockResolvedValueOnce(response("bad")).mockResolvedValueOnce(response(arabic));
+    expect(await generateEmail(transcript, { llm: createLlmAdapter(config(), fetcher), language: "ar" })).toEqual(arabic);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const initial = JSON.parse(fetcher.mock.calls[0]![1]!.body as string).messages;
+    const repair = JSON.parse(fetcher.mock.calls[1]![1]!.body as string).messages;
+    expect(repair.slice(0, -1)).toEqual(initial);
+    expect(initial[1]).toMatchObject({ role: "system", content: expect.stringContaining("subject and body in professional Modern Standard Arabic") });
+    expect(JSON.parse(initial[2].content.split("\n")[1])).toEqual({ messages: transcript });
+    expect(JSON.stringify(repair)).not.toContain("English");
+    expect(repair.at(-1).content).toContain("untrusted previous output");
+  });
   it("repairs malformed envelopes and refuses truncated completions", async () => {
     for (const bad of [new Response("not JSON"), response(result, "length"), Response.json({ choices: [] })]) {
       const fetcher = vi.fn<FetchLike>().mockResolvedValueOnce(bad).mockResolvedValueOnce(response());
@@ -112,8 +128,8 @@ describe("LLM transport", () => {
   });
   it("preserves actionable validator size errors without repair", async () => {
     const fetcher = vi.fn<FetchLike>().mockResolvedValue(response());
-    const validate = () => { throw new AppError("CHUNK_RESULT_TOO_LARGE"); };
-    await expect(createLlmAdapter(config(), fetcher).generate({ ...request, validate })).rejects.toEqual(new AppError("CHUNK_RESULT_TOO_LARGE"));
+    const validate = () => { throw new AppError("MODEL_OUTPUT_TOO_LARGE"); };
+    await expect(createLlmAdapter(config(), fetcher).generate({ ...request, validate })).rejects.toEqual(new AppError("MODEL_OUTPUT_TOO_LARGE"));
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it("bounds serialized input before transport, including repair metadata", async () => {
@@ -128,49 +144,31 @@ describe("LLM transport", () => {
   });
 });
 
-describe("cancellation and queue", () => {
+describe("cancellation", () => {
   it("does not call fetch for pre-aborted work", async () => {
     const controller = new AbortController(); controller.abort();
     const fetcher = vi.fn<FetchLike>();
     await expect(createLlmAdapter(config(), fetcher).generate({ ...request, signal: controller.signal })).rejects.toEqual(new AppError("CANCELLED"));
     expect(fetcher).not.toHaveBeenCalled();
   });
-  it("cancels active and queued work, releases capacity, and never dispatches cancelled queued work", async () => {
+  it("cancels active work and permits a later independent request", async () => {
     const started = deferred<void>();
     let activeSignal: AbortSignal | undefined;
     const fetcher = vi.fn<FetchLike>((_, init) => {
       activeSignal = init!.signal!; started.resolve();
       return new Promise(() => {});
     }).mockResolvedValueOnce(response());
-    const adapter = createLlmAdapter(config({ extractionConcurrency: 1 }), fetcher);
+    const adapter = createLlmAdapter(config(), fetcher);
     await adapter.generate(request);
     const active = new AbortController();
-    const queued = new AbortController();
     const p1 = adapter.generate({ ...request, signal: active.signal });
     const rejected1 = expect(p1).rejects.toEqual(new AppError("CANCELLED"));
     await started.promise;
-    const p2 = adapter.generate({ ...request, signal: queued.signal });
-    const rejected2 = expect(p2).rejects.toEqual(new AppError("CANCELLED"));
-    queued.abort(); await rejected2;
     active.abort(); await rejected1;
     expect(activeSignal!.aborted).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(2);
     fetcher.mockResolvedValueOnce(response());
     expect(await adapter.generate(request)).toEqual(result);
-  });
-  it("limits concurrency and starts queued requests as capacity frees", async () => {
-    const first = deferred<Response>();
-    const started = deferred<void>();
-    const fetcher = vi.fn<FetchLike>(() => { started.resolve(); return first.promise; }).mockImplementationOnce(() => { started.resolve(); return first.promise; });
-    const adapter = createLlmAdapter(config({ extractionConcurrency: 1 }), fetcher);
-    const p1 = adapter.generate(request);
-    await started.promise;
-    const p2 = adapter.generate(request);
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    fetcher.mockResolvedValueOnce(response());
-    first.resolve(response());
-    expect(await Promise.all([p1, p2])).toEqual([result, result]);
-    expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it("cancels during retry delay without another attempt", async () => {
     const controller = new AbortController();

@@ -17,8 +17,6 @@
     "LLM_BASE_URL": "https://synthetic.invalid/v1",
     "LLM_API_KEY": "synthetic-unused-key",
     "LLM_MODEL": "synthetic-injected-adapter",
-    "OPERATIONS_EMAIL": "operations@example.com",
-    "ADMINISTRATION_EMAIL": "administration@example.com",
     "MAX_SUBJECT_CHARS": "600"
   }
 }

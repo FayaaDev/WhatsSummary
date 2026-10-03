@@ -1,9 +1,8 @@
 import { createWorker } from "../../src/index";
 import { AppError } from "../../src/errors";
-import type { ChunkExtraction, TemporaryAnalysis, TranscriptMessage } from "../../src/contracts";
+import type { TranscriptMessage } from "../../src/contracts";
 import type { LlmAdapter, LlmRequest } from "../../src/llm";
 
-// Only this entry imports the synthetic adapter. No fake HTTP endpoint or production switch.
 function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve, reject) => {
     const abort = () => {
@@ -17,38 +16,26 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
   });
 }
 
-export default createWorker({ createLlm: (): LlmAdapter => {
-  let initial = false;
-  return { async generate<T>(request: LlmRequest<T>): Promise<T> {
-    const data = JSON.parse(request.messages[1]!.content.split("\n")[1]!);
-    if (data.messages && !data.extractions) {
-      initial = true;
-      const messages = data.messages as TranscriptMessage[];
-      if (messages.some(message => message.text.includes("E2E_SLOW"))) {
-        console.log("E2E_MODEL_WAITING");
-        await delay(30_000, request.signal);
-      }
-      const extraction: ChunkExtraction = {
-        conversations: messages.map(message => ({ id: message.id, source_message_ids: [message.id],
-          outcome_summary: `Synthetic conversation ${message.index + 1} covered the October project.`, continues_previous: false })),
-        client_facts: [{ kind: "timing", value: "October project", source_message_ids: [messages[0]!.id] }],
-        action_events: [],
-      };
-      return request.validate(extraction);
+// Test entry only: real generateEmail prompt, parser and output validator, no model endpoint.
+const failedOnce = new Set<string>();
+export default createWorker({ createLlm: (): LlmAdapter => ({
+  async generate<T>(request: LlmRequest<T>): Promise<T> {
+    const user = request.messages.find(message => message.role === "user")?.content;
+    if (!user?.startsWith("UNTRUSTED_DATA_JSON\n") || !user.endsWith("\nEND_UNTRUSTED_DATA_JSON")) throw new Error("Unexpected generation prompt");
+    const data = JSON.parse(user.slice("UNTRUSTED_DATA_JSON\n".length, -"\nEND_UNTRUSTED_DATA_JSON".length));
+    if (Object.keys(data).join() !== "messages" || !Array.isArray(data.messages) || !data.messages.length) throw new Error("Missing parsed transcript");
+    const messages = data.messages as TranscriptMessage[];
+    const text = messages.map(message => message.text).join("\n");
+    const failure = /E2E_FAIL_ONCE:[\w-]+/.exec(text)?.[0];
+    if (failure && !failedOnce.has(failure)) { failedOnce.add(failure); throw new AppError("MODEL_UNAVAILABLE"); }
+    if (text.includes("E2E_SLOW")) {
+      console.log("E2E_MODEL_WAITING");
+      await delay(30_000, request.signal);
     }
-    if (data.extractions) return request.validate({
-      source_messages: data.source_messages,
-      conversations: (data.extractions as ChunkExtraction[]).flatMap(extraction => extraction.conversations.map(({ continues_previous: _, ...conversation }) => conversation)),
-      client_facts: data.extractions[0].client_facts, pending_actions: [],
-    } satisfies TemporaryAnalysis);
-    const department = request.messages[0]!.content.includes("Operations:") ? "operations" : "administration";
-    if (initial && data.client_name.startsWith(`Fail ${department} `)) throw new AppError("MODEL_UNAVAILABLE");
-    // Keep one real HTTP stream open while the sibling is already editable/saveable.
-    if (initial && department === "administration" && data.client_name.startsWith("Streaming ")) await delay(2500, request.signal);
-    return request.validate({ email_subject: data.client_name.startsWith("Long subject ") ? "S".repeat(501) : `Synthetic ${department} overview`,
-      email_body: department === "operations"
-        ? [...data.conversations.map((conversation: { outcome_summary: string }) => conversation.outcome_summary), data.pending_section].join("\n\n")
-        : "The stated timing is the October project.",
+    const clean = (value: string) => value.replace(/E2E_\w+(?::[\w-]+)?|PRIVATE_TRANSCRIPT_SENTINEL/g, "").trim();
+    return request.validate({
+      email_subject: text.includes("E2E_LONG_SUBJECT") ? "S".repeat(501) : `Summary: ${clean(messages[0]!.text).slice(0, 100)}`,
+      email_body: messages.map(message => `Message ${message.index + 1} (${message.timestamp}): ${clean(message.text)}`).join("\n\n"),
     });
-  } };
-} });
+  },
+}) });

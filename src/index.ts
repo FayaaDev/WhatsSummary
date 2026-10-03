@@ -1,12 +1,11 @@
-import { analyzeHistory } from "./analysis";
 import { loadConfig, publicConfig, type AppConfig, type Env } from "./config";
 import type { ErrorCode, GenerationEvent, StageEvent } from "./contracts";
 import { createDraft, deleteDraft, getDraft, listDrafts, updateDraft } from "./drafts";
 import { AppError, toAppError } from "./errors";
-import { synthesizeDepartment, synthesizeDepartments, validateGenerateDepartmentRequest } from "./generation";
+import { generateEmail } from "./generation";
 import { createLlmAdapter, type LlmAdapter } from "./llm";
-import { chunkTranscript, parseTranscript } from "./transcript";
-import { validateClientName, validateDraftCandidate, validateDraftUpdate } from "./validation";
+import { parseTranscript } from "./transcript";
+import { validateDraftCandidate, validateDraftUpdate } from "./validation";
 
 export interface RequestLog {
   route: string;
@@ -16,7 +15,6 @@ export interface RequestLog {
   requestBytes: number;
   uploadBytes?: number;
   messageCount?: number;
-  chunkCount?: number;
   errorCodes: ErrorCode[];
 }
 
@@ -87,19 +85,17 @@ function streamResponse(request: Request, context: Pick<ExecutionContext, "waitU
   if (request.signal.aborted) cancel();
   let terminal = false;
   let tail = Promise.resolve();
-  const stages = new Map<string, StageEvent>();
+  let stage: StageEvent | undefined;
   const write = (event: GenerationEvent) => writer.write(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
   const emit: Emit = (event) => {
     const pending = tail.then(async () => {
       if (controller.signal.aborted) throw new AppError("CANCELLED");
       if (terminal) throw new AppError("INVALID_STREAM");
-      if (event.type === "error" || event.type === "department_error") record.errorCodes.push(event.code);
+      if (event.type === "error") record.errorCodes.push(event.code);
       if (event.type === "done" || event.type === "error") terminal = true;
       if (event.type === "stage") {
-        const key = event.stage === "synthesis" ? event.department : event.stage;
-        if (event.completed === event.total) stages.delete(key);
-        else stages.set(key, event);
-      } else if (event.type === "department_result" || event.type === "department_error") stages.delete(event.department);
+        stage = event.completed === event.total ? undefined : event;
+      } else if (event.type === "result") stage = undefined;
       await write(event);
     });
     tail = pending;
@@ -115,7 +111,6 @@ function streamResponse(request: Request, context: Pick<ExecutionContext, "waitU
     heartbeatPending = true;
     const pending = tail.then(async () => {
       if (terminal || controller.signal.aborted) return;
-      const stage = stages.values().next().value;
       if (stage) await write(stage);
     });
     tail = pending;
@@ -147,7 +142,7 @@ function streamResponse(request: Request, context: Pick<ExecutionContext, "waitU
   return new Response(stream.readable, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
-/** Factory lets local integration tests use the real API/pipeline/D1 with an injected LLM. */
+/** Factory lets local integration tests use the real API/D1 with an injected LLM. */
 export function createWorker(options: WorkerOptions = {}) {
   return {
     async fetch(request: Request, env: Env, context: Pick<ExecutionContext, "waitUntil">): Promise<Response> {
@@ -155,7 +150,7 @@ export function createWorker(options: WorkerOptions = {}) {
       const path = new URL(request.url).pathname;
       if (path !== "/api" && !path.startsWith("/api/")) return env.ASSETS.fetch(request);
       const item = /^\/api\/drafts\/([^/]+)$/.exec(path);
-      const methods = path === "/api/config" ? ["GET"] : path === "/api/generate" || path === "/api/generate/department" ? ["POST"]
+      const methods = path === "/api/config" ? ["GET"] : path === "/api/generate" ? ["POST"]
         : path === "/api/drafts" ? ["GET", "POST"] : item ? ["GET", "PUT", "DELETE"] : [];
       const record: RequestLog = { route: item ? "/api/drafts/:id" : methods.length ? path : "/api/*",
         method: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"].includes(request.method) ? request.method : "OTHER",
@@ -192,47 +187,35 @@ export function createWorker(options: WorkerOptions = {}) {
           record.status = 204;
           return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
         }
-        let run: (emit: Emit, signal: AbortSignal) => Promise<void>;
-        if (path === "/api/generate/department") {
-          const input = validateGenerateDepartmentRequest(await readJson(request, limits.maxRequestBytes, record), limits);
-          const llm = (options.createLlm ?? createLlmAdapter)(config);
-          run = async (emit, signal) => {
-            try {
-              const draft = await synthesizeDepartment(input, { llm, limits, departments: config.departments, signal, onProgress: emit });
-              await emit(draft.department === "operations"
-                ? { type: "department_result", department: "operations", draft: { ...draft, department: "operations" } }
-                : { type: "department_result", department: "administration", draft: { ...draft, department: "administration" } });
-            } catch (error) {
-              if (signal.aborted) throw new AppError("CANCELLED");
-              await emit({ type: "department_error", department: input.department, ...toAppError(error).toJSON() });
-            }
-          };
+        if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "multipart/form-data") throw new AppError("INVALID_REQUEST");
+        const bytes = await readBody(request, limits.maxRequestBytes, record);
+        let form: FormData;
+        try { form = await new Response(bytes, { headers: { "Content-Type": request.headers.get("content-type")! } }).formData(); }
+        catch { throw new AppError("INVALID_REQUEST"); }
+        if ([...form.keys()].some((key) => key !== "transcript" && key !== "language")
+          || form.getAll("transcript").length !== 1 || form.getAll("language").length > 1) throw new AppError("INVALID_REQUEST");
+        const language = form.get("language") ?? "en";
+        if (language !== "en" && language !== "ar") throw new AppError("INVALID_REQUEST");
+        const input = form.get("transcript")!;
+        let text: string;
+        if (typeof input === "string") {
+          text = input;
+          record.uploadBytes = new TextEncoder().encode(text).byteLength;
         } else {
-          if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "multipart/form-data") throw new AppError("INVALID_REQUEST");
-          const bytes = await readBody(request, limits.maxRequestBytes, record);
-          let form: FormData;
-          try { form = await new Response(bytes, { headers: { "Content-Type": request.headers.get("content-type")! } }).formData(); }
-          catch { throw new AppError("INVALID_REQUEST"); }
-          if ([...form.keys()].length !== 2 || form.getAll("clientName").length !== 1 || form.getAll("transcript").length !== 1) throw new AppError("INVALID_REQUEST");
-          const clientName = validateClientName(form.get("clientName"), limits);
-          const file = form.get("transcript");
-          if (!file || typeof file === "string" || !file.name.toLowerCase().endsWith(".txt")) throw new AppError("INVALID_REQUEST");
-          record.uploadBytes = file.size;
-          if (file.size > limits.maxUploadBytes) throw new AppError("UPLOAD_TOO_LARGE");
-          let text: string;
-          try { text = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer()); }
+          if (!input.name.toLowerCase().endsWith(".txt")) throw new AppError("INVALID_REQUEST");
+          record.uploadBytes = input.size;
+          if (input.size > limits.maxUploadBytes) throw new AppError("UPLOAD_TOO_LARGE");
+          try { text = new TextDecoder("utf-8", { fatal: true }).decode(await input.arrayBuffer()); }
           catch { throw new AppError("PARSE_ERROR"); }
-          const messages = parseTranscript(text, limits);
-          record.messageCount = messages.length;
-          record.chunkCount = chunkTranscript(messages, limits).length;
-          if (request.signal.aborted) throw new AppError("CANCELLED");
-          const llm = (options.createLlm ?? createLlmAdapter)(config);
-          run = async (emit, signal) => {
-            const analysis = await analyzeHistory(messages, { llm, limits, signal, onProgress: emit });
-            await emit({ type: "analysis", analysis });
-            await synthesizeDepartments(clientName, analysis, { llm, limits, signal, departments: config.departments, onProgress: emit, onOutcome: emit });
-          };
         }
+        const messages = parseTranscript(text, limits);
+        record.messageCount = messages.length;
+        if (request.signal.aborted) throw new AppError("CANCELLED");
+        const llm = (options.createLlm ?? createLlmAdapter)(config);
+        const run = async (emit: Emit, signal: AbortSignal) => {
+          const draft = await generateEmail(messages, { llm, limits, language, signal, onProgress: emit });
+          await emit({ type: "result", draft });
+        };
         const response = streamResponse(request, context, run, record, finish);
         streaming = true;
         return response;
